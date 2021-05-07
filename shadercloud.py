@@ -19,7 +19,7 @@
 bl_info = {
     "name": "Shader Cloud",
     "author": "Shader Cloud",
-    "version": (0, 0, 1),
+    "version": (0, 1, 1),
     "blender": (2, 80, 0),
     "location": "Shader Editor > Sidebar > Shader Cloud",
     "description": "Allows you to export materials to Shader Cloud",
@@ -128,6 +128,10 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
         
         url = bl_info['api_url']+'api/import'
         myobj = {'xml': f.getvalue(), 'material_name': name}
+        
+        if material.get('shadercloud_id'):
+            myobj['material_id'] = material.get('shadercloud_id')
+        
         api_key = context.preferences.addons['shadercloud'].preferences.api_key
         
         # Check if there are any images that need uploading
@@ -152,6 +156,8 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
         if(x.get('success') == False):
             self.message("ERROR", 'Shader Cloud Error: ' +x.get('error'))
             return {"CANCELLED"}
+        
+        material['shadercloud_id'] = x.get('material_id')
         
         self.message("INFO", "Material was succesfully added to Shader Cloud")
         
@@ -208,6 +214,15 @@ class SHADER_CLOUD_PT_1(ShaderCloudPanel, bpy.types.Panel):
                 
         row2 = col.row(align=True)
         row2.operator('object.shader_cloud_export')
+        
+        material = bpy.context.active_object.active_material
+        
+        if material.get('shadercloud_id'):
+            row = col.row(align=True)
+            row.label(text="Shader Cloud ID: "+str(material.get('shadercloud_id')))
+            row = col.row(align=True)
+            row.operator('object.shader_cloud_reset')
+            
         
         
 class OBJECT_OT_shader_cloud_import(bpy.types.Operator):
@@ -331,14 +346,24 @@ class SHADER_CLOUD_PT_2(ShaderCloudPanel, bpy.types.Panel):
         row = col.row(align=True)
         row.operator('object.shader_cloud_import')
         
-    
-    
-        
 class OBJECT_OT_shader_cloud_save(bpy.types.Operator):
     bl_idname = "object.shader_cloud_save"
     bl_label = "Save Settings"
     
     def invoke(self, context, event):
+        return {"FINISHED"}
+    
+        
+class OBJECT_OT_shader_cloud_reset(bpy.types.Operator):
+    bl_idname = "object.shader_cloud_reset"
+    bl_label = "Reset New Material"
+    
+    def invoke(self, context, event):
+        
+        material = bpy.context.active_object.active_material
+        if material.get('shadercloud_id'):
+            del material['shadercloud_id']
+        
         return {"FINISHED"}
     
     
@@ -368,6 +393,7 @@ classes = (
     OBJECT_OT_shader_cloud_export,
     OBJECT_OT_shader_cloud_import,
     OBJECT_OT_shader_cloud_save,
+    OBJECT_OT_shader_cloud_reset,
     ShaderCloudPreferences,
 )
 
