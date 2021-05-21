@@ -19,7 +19,7 @@
 bl_info = {
     "name": "Shader Cloud",
     "author": "Shader Cloud",
-    "version": (0, 1, 1),
+    "version": (0, 1, 2),
     "blender": (2, 80, 0),
     "location": "Shader Editor > Sidebar > Shader Cloud",
     "description": "Allows you to export materials to Shader Cloud",
@@ -32,11 +32,12 @@ import bpy
 import requests
 import io
 import os
-import textwrap 
+import textwrap
 import base64
 import zlib
 import struct
 import tempfile
+import json
 
 from rna_xml import rna2xml
 from contextlib import redirect_stdout
@@ -65,6 +66,61 @@ def img_to_png(blender_image):
 
     return 'data:image/png;base64,' + base64.b64encode(png_bytes).decode()
 
+def ParseShaderCloudCategories():
+    try:
+        cat_string = bpy.context.preferences.addons['shadercloud'].preferences.shader_cloud_categories
+    except Exception:
+        cat_string = DownloadShaderCloudCategories()
+        try:
+            bpy.context.preferences.addons['shadercloud'].preferences.shader_cloud_categories = cat_string
+        except Exception:
+            pass
+
+    json_value = json.loads(cat_string)
+    if(json_value['success']):
+        cats = [("0", "Select a Category", '', '', 0)]
+
+        n = 1
+        for x in json_value['categories']:
+            cats.append((str(x['id']), x['name'], '', '', n))
+            n+=1
+        return cats
+
+    raise Exception("Could not parse categories")
+
+def DownloadShaderCloudCategories():
+    print('Downloading Shadercloud Categories')
+    try:
+        url = bl_info['api_url']+'api/categories'
+        req = requests.get(url)
+        if req.status_code != 200:
+            self.message("ERROR", "API Category Request Failed")
+            return {"CANCELLED"}
+    except requests.exceptions.RequestException as e:
+        self.message("ERROR", "API Category Request Failed")
+        return {"CANCELLED"}
+
+    return req.text
+
+class ShaderCloudPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    api_key: bpy.props.StringProperty(default="", name="API Key")
+    use_arranger: bpy.props.BoolProperty(default=1, name="Use Arranger Node Addon")
+    shader_cloud_categories: bpy.props.StringProperty(default=DownloadShaderCloudCategories(), name="shader_cloud_categories")
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text='Shader Cloud API Key:')
+        row = layout.row()
+        row.prop(self, 'api_key', expand=True)
+        row = layout.row()
+        row.prop(self, 'use_arranger', expand=True)
+        row = layout.row()
+        row.operator('object.shader_cloud_save')
+        row = layout.row()
+        row.prop(self, 'shader_cloud_categories', expand=False)
+
 class ShaderCloudPanel:
     bl_space_type = "NODE_EDITOR"
     bl_region_type = "UI"
@@ -72,19 +128,26 @@ class ShaderCloudPanel:
     bl_options = {"HEADER_LAYOUT_EXPAND"}
 
 class MaterialProps(bpy.types.PropertyGroup):
-    
+
     material_name: bpy.props.StringProperty(name="Material Name",default="")
     api_loading_export: bpy.props.BoolProperty(name="API Loading",default=False)
     message_text: bpy.props.StringProperty(name="Message Text",default="")
     message_type: bpy.props.StringProperty(name="Message Type",default="")
-    
+    material_description: bpy.props.StringProperty(name="Material Description",default="")
+
+    material_category: bpy.props.EnumProperty(
+        items=ParseShaderCloudCategories(),
+        name="Material Category",
+        default="0",
+    )
+
 class ImportProps(bpy.types.PropertyGroup):
-    
+
     material_id: bpy.props.IntProperty(name="Material ID",default=0)
     api_loading_import: bpy.props.BoolProperty(name="API Loading",default=False)
     message_text: bpy.props.StringProperty(name="Message Text",default="")
     message_type: bpy.props.StringProperty(name="Message Type",default="")
-    
+
 def ClearMessages():
     bpy.context.scene.material_props.message_text = ''
     bpy.context.scene.import_props.message_text = ''
@@ -93,92 +156,96 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
     bl_idname = "object.shader_cloud_export"
     bl_label = "Export Material"
     bl_description = "Export your material nodes to shader cloud"
-    
+
     def setLoading(self,val):
         bpy.context.scene.material_props.api_loading_export = val
-        
+
     def message(self, type, message):
         bpy.context.scene.material_props.message_text = message
         bpy.context.scene.material_props.message_type = type
         print(type)
         if type == 'INFO' or type == 'ERROR':
             self.report({type}, message)
-    
+
     @classmethod
     def poll(self, context):
         if bpy.context.scene.material_props.api_loading_export:
             return False
         return True
-    
+
     def execute(self, context):
-            
+
         name = bpy.context.scene.material_props.material_name
+        description = bpy.context.scene.material_props.material_description
+        category = int(bpy.context.scene.material_props.material_category)
 
         if name == '':
             self.message("ERROR", "You must give your material a name")
             return {"CANCELLED"}
-        
+
+        if category <= 0:
+            self.message("ERROR", "Please select a category")
+            return {"CANCELLED"}
+
         material = bpy.context.active_object.active_material
-        
+
         f = io.StringIO()
         with redirect_stdout(f):
             rna2xml(root_node="MyRootName", root_rna=material.node_tree)
-            
-        
-        
+
         url = bl_info['api_url']+'api/import'
-        myobj = {'xml': f.getvalue(), 'material_name': name}
-        
+        myobj = {'xml': f.getvalue(), 'material_name': name, 'material_description': description, 'material_category': category}
+
         if material.get('shadercloud_id'):
             myobj['material_id'] = material.get('shadercloud_id')
-        
+
         api_key = context.preferences.addons['shadercloud'].preferences.api_key
-        
+
         # Check if there are any images that need uploading
         images = []
         for node in material.node_tree.nodes:
             if hasattr(node, "image"):
                 myobj['images['+node.name+'][image_data]'] = img_to_png(node.image)
                 myobj['images['+node.name+'][color_space]'] = node.image.colorspace_settings.name
-        
+
         headers = {"Authorization": "Bearer "+api_key, "Accept": "application/json"}
-        
+
         try:
             req = requests.post(url, data = myobj, headers = headers)
             x = req.json()
             if req.status_code != 200:
                 self.message("ERROR", "API Request Failed: "+x.get('message'))
-                return {"CANCELLED"}                
+                return {"CANCELLED"}
         except requests.exceptions.RequestException as e:
             self.message("ERROR", "API Request Failed")
             return {"CANCELLED"}
-   
+
         if(x.get('success') == False):
             self.message("ERROR", 'Shader Cloud Error: ' +x.get('error'))
             return {"CANCELLED"}
-        
+
         material['shadercloud_id'] = x.get('material_id')
-        
+
         self.message("INFO", "Material was succesfully added to Shader Cloud")
-        
+
         return {"FINISHED"}
-    
+
     def invoke(self, context, event):
 
         ClearMessages()
-                
+
         self.setLoading(True)
-                
+
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
 
         result = self.execute(context)
-        
+
         self.setLoading(False)
-        
+
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-     
+
         return result
-        
+
 
 class SHADER_CLOUD_PT_1(ShaderCloudPanel, bpy.types.Panel):
     bl_idname = "SHADER_CLOUD_PT_1"
@@ -186,118 +253,130 @@ class SHADER_CLOUD_PT_1(ShaderCloudPanel, bpy.types.Panel):
 
     def draw(self, context):
         props = context.scene.material_props
-        
-        layout = self.layout
-        
-        col = layout.column(align=True)
-        
-        row1 = col.row(align=True)
-        
-        row1.label(text="Material Name")
-        
-        row1 = col.row(align=True)
-        
-        row1.prop(props,"material_name",text="")
-        
-        if bpy.context.scene.material_props.api_loading_export:
-            row3 = col.row(align=True)
-            row3.label(text="Connecting to API...")
 
-        
+        layout = self.layout
+
+        col = layout.column(align=True)
+
+        row = col.row(align=True)
+        row.label(text="Material Name")
+
+        row = col.row(align=True)
+        row.prop(props,"material_name",text="")
+
+        row = col.row(align=True)
+        row.label(text="Material Category")
+
+        row = col.row(align=True)
+        row.prop(props,"material_category",text="")
+
+        row = col.row(align=True)
+        row.label(text="Material Description")
+
+        row = col.row(align=True)
+        row.prop(props,"material_description",text="")
+
+        if bpy.context.scene.material_props.api_loading_export:
+            row = col.row(align=True)
+            row.label(text="Connecting to API...")
+
+
         if bpy.context.scene.material_props.message_text != "":
-            wrapp = textwrap.TextWrapper(width=30) #50 = maximum length       
-            wList = wrapp.wrap(text=bpy.context.scene.material_props.message_text) 
-            
-            for text in wList: 
+            wrapp = textwrap.TextWrapper(width=30) #50 = maximum length
+            wList = wrapp.wrap(text=bpy.context.scene.material_props.message_text)
+
+            for text in wList:
                 row = col.row(align=True)
                 row.label(text=text)
-                
-        row2 = col.row(align=True)
-        row2.operator('object.shader_cloud_export')
-        
+
+        row = col.row(align=True)
+        row.operator('object.shader_cloud_export')
+
         material = bpy.context.active_object.active_material
-        
+
         if material.get('shadercloud_id'):
             row = col.row(align=True)
             row.label(text="Shader Cloud ID: "+str(material.get('shadercloud_id')))
             row = col.row(align=True)
+            row.operator("wm.url_open", text="Visit Material Page").url = bl_info['api_url']+"material/"+str(material.get('shadercloud_id'))
+            row = col.row(align=True)
             row.operator('object.shader_cloud_reset')
-            
-        
-        
+
+
+
 class OBJECT_OT_shader_cloud_import(bpy.types.Operator):
     bl_idname = "object.shader_cloud_import"
     bl_label = "Import Material"
     bl_description = "Import your material nodes to shader cloud"
-    
+
     def setLoading(self,val):
         bpy.context.scene.import_props.api_loading_import = val
-        
+
     def message(self, type, message):
         bpy.context.scene.import_props.message_text = message
         bpy.context.scene.import_props.message_type = type
         print(type)
         if type == 'INFO' or type == 'ERROR':
             self.report({type}, message)
-    
+
     @classmethod
     def poll(self, context):
         if bpy.context.scene.import_props.api_loading_import:
             return False
         return True
-    
+
     def execute(self, context):
-            
+
         material_id = bpy.context.scene.import_props.material_id
 
         if material_id <= 0:
             self.message("ERROR", "You must enter a material ID")
             return {"CANCELLED"}
-        
+
         url = bl_info['api_url']+'api/download'
         myobj = {'material_id': material_id}
         api_key = context.preferences.addons['shadercloud'].preferences.api_key
-        
+
         headers = {"Authorization": "Bearer "+api_key, "Accept": "application/json"}
-        
+
         try:
             req = requests.post(url, data = myobj, headers = headers)
             x = req.json()
             if req.status_code != 200:
                 self.message("ERROR", "API Request Failed: "+x.get('message'))
-                return {"CANCELLED"}                
+                return {"CANCELLED"}
         except requests.exceptions.RequestException as e:
             self.message("ERROR", "API Request Failed")
             return {"CANCELLED"}
-   
+
         if(x.get('success') == False):
             self.message("ERROR", 'Shader Cloud Error: ' +x.get('error'))
             return {"CANCELLED"}
-        
+
         exec(x.get('code'))
-        
+
         self.message("INFO", "Material was succesfully imported to your blender object")
-        
-        
+
+
         return {"FINISHED"}
-    
+
     def invoke(self, context, event):
         ClearMessages()
-        
+
         self.setLoading(True)
-        
+
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
 
         result = self.execute(context)
-        
+
         self.setLoading(False)
-        
+
         bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
-        
+
         # Enable node arranger
         if(context.preferences.addons['shadercloud'].preferences.use_arranger):
             bpy.ops.preferences.addon_enable(module = "node_arrange")
-        
+
             for area in bpy.context.screen.areas:
                 if area.type == 'NODE_EDITOR':
                     for region in area.regions:
@@ -306,86 +385,69 @@ class OBJECT_OT_shader_cloud_import(bpy.types.Operator):
                             ctx['area'] = area
                             ctx['region'] = region
                             bpy.ops.node.button(ctx, "INVOKE_DEFAULT")
-         
+
         return result
-    
-    
-            
+
+
+
 class SHADER_CLOUD_PT_2(ShaderCloudPanel, bpy.types.Panel):
     bl_idname = "SHADER_CLOUD_PT_2"
     bl_label = "Shader Cloud Import"
-    
+
     def draw(self, context):
         props = context.scene.import_props
-        
+
         layout = self.layout
-        
+
         col = layout.column(align=True)
-        
+
         row = col.row(align=True)
-        
+
         row.label(text="Material ID")
-        
+
         row = col.row(align=True)
-        
+
         row.prop(props,"material_id",text="")
-        
+
         if bpy.context.scene.import_props.api_loading_import:
             row = col.row(align=True)
             row.label(text="Connecting to API...")
 
-        
+
         if bpy.context.scene.import_props.message_text != "":
-            wrapp = textwrap.TextWrapper(width=30) #50 = maximum length       
-            wList = wrapp.wrap(text=bpy.context.scene.import_props.message_text) 
-            
-            for text in wList: 
+            wrapp = textwrap.TextWrapper(width=30) #50 = maximum length
+            wList = wrapp.wrap(text=bpy.context.scene.import_props.message_text)
+
+            for text in wList:
                 row = col.row(align=True)
                 row.label(text=text)
-        
+
         row = col.row(align=True)
         row.operator('object.shader_cloud_import')
-        
+
 class OBJECT_OT_shader_cloud_save(bpy.types.Operator):
     bl_idname = "object.shader_cloud_save"
     bl_label = "Save Settings"
-    
+
     def invoke(self, context, event):
         return {"FINISHED"}
-    
-        
+
+
 class OBJECT_OT_shader_cloud_reset(bpy.types.Operator):
     bl_idname = "object.shader_cloud_reset"
     bl_label = "Reset New Material"
-    
+
     def invoke(self, context, event):
-        
+
         material = bpy.context.active_object.active_material
         if material.get('shadercloud_id'):
             del material['shadercloud_id']
-        
+
         return {"FINISHED"}
-    
-    
-class ShaderCloudPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
- 
-    api_key: bpy.props.StringProperty(default="", name="API Key")
-    use_arranger: bpy.props.BoolProperty(default=1, name="Use Arranger Node Addon")
-    
- 
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text='Shader Cloud API Key:')
-        row = layout.row()
-        row.prop(self, 'api_key', expand=True)
-        row = layout.row()
-        row.prop(self, 'use_arranger', expand=True)
-        row2 = layout.row()
-        row2.operator('object.shader_cloud_save')
-        
+
 
 classes = (
+    ShaderCloudPreferences,
     MaterialProps,
     ImportProps,
     SHADER_CLOUD_PT_1,
@@ -394,7 +456,7 @@ classes = (
     OBJECT_OT_shader_cloud_import,
     OBJECT_OT_shader_cloud_save,
     OBJECT_OT_shader_cloud_reset,
-    ShaderCloudPreferences,
+
 )
 
 def register():

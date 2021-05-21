@@ -9,3 +9,10 @@ Then go to Blender -> Edit -> Perference -> Addon-ons -> Install and location th
 After installing the ZIP file, find "Shader Cloud" addon in the Add-ons list and click the checkbox to enable it.
 
 Enter your API Key from shader.cloud in the preference box.
+
+## Changelog
+
+### 0.1.2
+- Added category selection
+- Added material description field
+- Added button to view material on shader.cloud
