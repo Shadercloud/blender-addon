@@ -167,6 +167,15 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
         if type == 'INFO' or type == 'ERROR':
             self.report({type}, message)
 
+
+    def nestedGroups(self, tree):
+        for x in tree.nodes:
+            if x.type == 'GROUP':
+                print('<group name="'+x.node_tree.name+'">')
+                rna2xml(root_node="groupdata", root_rna=x.node_tree)
+                print('</group>')
+                self.nestedGroups(x.node_tree)
+
     @classmethod
     def poll(self, context):
         if bpy.context.scene.material_props.api_loading_export:
@@ -191,10 +200,15 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
 
         f = io.StringIO()
         with redirect_stdout(f):
-            rna2xml(root_node="MyRootName", root_rna=material.node_tree)
+            rna2xml(root_node="Material", root_rna=material.node_tree)
+
+            print('<groups>')
+            self.nestedGroups(material.node_tree)
+            print('</groups>')
 
         url = bl_info['api_url']+'api/import'
-        myobj = {'xml': f.getvalue(), 'material_name': name, 'material_description': description, 'material_category': category}
+
+        myobj = {'xml': '<xml>'+f.getvalue()+'</xml>', 'material_name': name, 'material_description': description, 'material_category': category}
 
         if material.get('shadercloud_id'):
             myobj['material_id'] = material.get('shadercloud_id')
