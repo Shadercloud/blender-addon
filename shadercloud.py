@@ -169,6 +169,8 @@ class OBJECT_OT_shader_cloud_export(bpy.types.Operator):
 
 
     def nestedGroups(self, tree):
+        if hasattr(tree, 'nodes') == False:
+            return False
         for x in tree.nodes:
             if x.type == 'GROUP':
                 print('<group name="'+x.node_tree.name+'">')
