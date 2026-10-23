@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+
+id = "shadercloud"
+version = "1.0.0"
+name = "Shader Cloud"
+tagline = "Import and export materials to Shader Cloud"
+maintainer = "Shader Cloud"
+type = "add-on"
+website = "https://shader.cloud/"
+tags = ["Material", "Node"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-2.0-or-later"]
+
+[permissions]
+network = "Download and upload materials to shader.cloud"
